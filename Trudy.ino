@@ -130,30 +130,34 @@ void checkDHPG(const String &message)
         Serial.println("PG_AKEY:" + String(p) + "," + String(g) + "," + String(TrudyPublicKey));
 
         // Wait for Bob's Response
+        String bobMessage = "";
         while (true)
         {
-            String message = readSerial(Bob);
-            if (message.startsWith("PG_BKEY:"))
+            String m = readSerial(Bob);
+            if (m != "")
             {
-                // Extract P, G, and A values
-                int start = message.indexOf(':') + 1; // Start after "PG_AKEY:"
-                int firstComma = message.indexOf(',', start);
-                int secondComma = message.indexOf(',', firstComma + 1);
-
-                long p = message.substring(start, firstComma).toInt();
-                long _ = message.substring(firstComma + 1, secondComma).toInt();
-                long B = message.substring(secondComma + 1).toInt();
-
-                Serial.print("B->T: ");
-                Serial.print(message);
-
-                // Calculate the shared secret
-                // B^t mod p
-                BobSharedSecret = modExp(B, TrudyPrivateKey, p);
+                bobMessage = m;
                 break;
             }
         }
 
+        Serial.print("B->T: ");
+        Serial.println(bobMessage);
+
+        // Extract P, G, and B values
+        start = bobMessage.indexOf(':') + 1; // Start after "PG_AKEY:"
+        firstComma = bobMessage.indexOf(',', start);
+        secondComma = bobMessage.indexOf(',', firstComma + 1);
+
+        p = bobMessage.substring(start, firstComma).toInt();
+        g = bobMessage.substring(firstComma + 1, secondComma).toInt();
+        long B = bobMessage.substring(secondComma + 1).toInt();
+
+        // Calculate the shared secret
+        // B^t mod p
+        BobSharedSecret = modExp(B, TrudyPrivateKey, p);
+
+        // Set the security level
         securityLevel = LEVEL1;
 
         // Debugging
@@ -210,9 +214,9 @@ void loop()
         {
             Serial.print("A->B: ");
             Serial.print(message);
-            send(Bob, message);
 
             checkDHPG(message);
+            send(Bob, message);
         }
 
         message = readSerial(Bob);
