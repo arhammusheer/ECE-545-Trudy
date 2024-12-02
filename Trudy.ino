@@ -12,22 +12,20 @@ enum SecurityLevel
 
 enum Level1State
 {
-    IDLE,          // Waiting for DH parameters
-    RECEIVED_PG,   // Received DH parameters from Alice
-    SENT_PG,       // Sent DH parameters to Bob
-    RECEIVED_ACK,  // Received ACK from Bob
-    SENT_ACK,      // Sent ACK to Alice
-    RECEIVED_AKEY, // Received Alice's public key
-    SENT_TBKEY,    // Sent Trudy's public key to Bob
-    RECEIVED_BKEY, // Received Bob's public key
-    SENT_TAKEY,     // Sent Trudy's public key to Alice
+    IDLE,
+    RECEIVED_PG_AKEY,
+    RECEIVED_PG_BKEY,
+    CONNECTED
 };
 
 SecurityLevel securityLevel = LEVEL0; // Current security level
 Level1State level1State = IDLE;       // Current state in level 1
 
-long AliceSideKey = 0; // Alice's public key
-long BobSideKey = 0;   // Bob's public key
+long AliceSharedSecret = 0; // Alice's public key
+long BobSharedSecret = 0;   // Bob's public key
+
+long TrudyPrivateKey = 0; // Trudy's private key
+long TrudyPublicKey = 0;  // Trudy's public key
 
 // Utility function for modular exponentiation
 long modExp(long base, long exponent, long modulus)
@@ -48,9 +46,9 @@ long modExp(long base, long exponent, long modulus)
 
 void setup()
 {
-    Serial.begin(9600);  // For debugging, if needed
-    Serial3.begin(9600); // Alice
-    Serial4.begin(9600); // Bob
+    Serial.begin(9600); // For debugging, if needed
+    Alice.begin(9600);  // Serial port to Alice
+    Bob.begin(9600);    // Serial port to Bob
 }
 
 // Function to read messages from a serial port
@@ -95,143 +93,135 @@ void send(HardwareSerial &serial, const String &message)
     serial.print(message);
 }
 
-// Check if Alice sent Diffie-Hellman parameters
-void checkDHPG(String message)
+// Function to check if the received message is a DH public key
+void checkDHPG(const String &message)
 {
-    // If not a DH message, return
-    if (message.startsWith("PG") == false)
+    if (message.startsWith("PG_AKEY:"))
     {
-        return;
-    }
-
-    // Set the security level to 1
-    securityLevel = LEVEL1;
-
-    level1State = RECEIVED_PG;
-
-    // Extract the parameters from the message
-    int comma = message.indexOf(',');
-    int p = message.substring(3, comma).toInt();
-    int g = message.substring(comma + 1).toInt();
-
-    // Send the parameters to Bob
-    send(Serial4, message);
-    level1State = SENT_PG;
-
-    // Wait for Bob's ACK
-    while (level1State != RECEIVED_ACK)
-    {
-        String message = readSerial(Serial4);
-        if (message.startsWith("ACK"))
-        {
-            level1State = RECEIVED_ACK;
-        }
-    }
-
-    // Send ACK to Alice
-    send(Serial3, "ACK\n");
-
-    level1State = SENT_ACK;
-
-    // Generate a random private key
-    int t = random(1, p - 1);
-    long T = modExp(g, a, p);
-    
-
-
-    // Wait for Alice's public key
-    long AKey;
-    while (level1State != RECEIVED_AKEY)
-    {
-        String message = readSerial(Serial3);
-        if (message.startsWith("AKEY"))
-        {
-            level1State = RECEIVED_AKEY;
-            //AKEY:128
-            AKey = message.substring(5).toInt();
-        }
-    }
-
-    // Send Trudy's public key to Bob
-    send(Serial4, "AKEY:" + String(T) + "\n");
-
-    level1State = SENT_TBKEY;
-
-    // Wait for Bob's public key
-    long BKey;
-    while (level1State != RECEIVED_BKEY)
-    {
-        String message = readSerial(Serial4);
-        if (message.startsWith("BKEY"))
-        {
-            level1State = RECEIVED_BKEY;
-            //BKEY:128
-            BKey = message.substring(5).toInt();
-        }
-    }
-
-    // Send Trudy's public key to Alice
-    send(Serial3, "BKEY:" + String(T) + "\n");
-
-    // Calculate the shared secrets with Alice and Bob
-    long AliceSharedSecret = modExp(BKey, t, p);
-    long BobSharedSecret = modExp(AKey, t, p);
-
-    // Print the shared secrets
-    Serial.print("Alice's shared secret: ");
-    Serial.println(AliceSharedSecret);
-    Serial.print("Bob's shared secret: ");
-    Serial.println(BobSharedSecret);
-}
-
-void relay(HardwareSerial &from, HardwareSerial &to, String debug_label)
-{
-    String message = readSerial(from);
-    if (message != "")
-    {
-        Serial.print(debug_label);
+        // PG_AKEY:2089,2,1019
+        Serial.print("A->T: ");
         Serial.print(message);
-        send(to, message);
+
+        // Extract P, G, and A values
+        int start = message.indexOf(':') + 1; // Start after "PG_AKEY:"
+        int firstComma = message.indexOf(',', start);
+        int secondComma = message.indexOf(',', firstComma + 1);
+
+        long p = message.substring(start, firstComma).toInt();
+        long g = message.substring(firstComma + 1, secondComma).toInt();
+        long A = message.substring(secondComma + 1).toInt();
+
+        // Generate a private key
+        TrudyPrivateKey = random(2, p - 1);
+        TrudyPublicKey = modExp(g, TrudyPrivateKey, p);
+
+        // Calculate the shared secret
+        // A^t mod p
+        AliceSharedSecret = modExp(A, TrudyPrivateKey, p);
+
+        // Send the public key to Alice
+        send(Alice, "PG_BKEY:" + String(p) + "," + String(g) + "," + String(TrudyPublicKey) + "\n");
+        Serial.print("T->A: ");
+        Serial.println("PG_BKEY:" + String(p) + "," + String(g) + "," + String(TrudyPublicKey));
+
+        // Now work on Bob
+        send(Bob, "PG_AKEY:" + String(p) + "," + String(g) + "," + String(TrudyPublicKey) + "\n");
+        Serial.print("T->B: ");
+        Serial.println("PG_AKEY:" + String(p) + "," + String(g) + "," + String(TrudyPublicKey));
+
+        // Wait for Bob's Response
+        while (true)
+        {
+            String message = readSerial(Bob);
+            if (message.startsWith("PG_BKEY:"))
+            {
+                // Extract P, G, and A values
+                int start = message.indexOf(':') + 1; // Start after "PG_AKEY:"
+                int firstComma = message.indexOf(',', start);
+                int secondComma = message.indexOf(',', firstComma + 1);
+
+                long p = message.substring(start, firstComma).toInt();
+                long _ = message.substring(firstComma + 1, secondComma).toInt();
+                long B = message.substring(secondComma + 1).toInt();
+
+                Serial.print("B->T: ");
+                Serial.print(message);
+
+                // Calculate the shared secret
+                // B^t mod p
+                BobSharedSecret = modExp(B, TrudyPrivateKey, p);
+                break;
+            }
+        }
+
+        securityLevel = LEVEL1;
+
+        // Debugging
+        Serial.print("Alice Shared Secret: ");
+        Serial.println(AliceSharedSecret);
+        Serial.print("Bob Shared Secret: ");
+        Serial.println(BobSharedSecret);
     }
 }
-
-String encrypt(String message, long key)
+String encrypt(String plainText, int key)
 {
+    // Use % 256 for compatibility with Teensy's key derivation
+    int derivedKey = key % 256;
     String encryptedText = "";
-    for (size_t i = 0; i < message.length(); i++)
+    for (int i = 0; i < plainText.length(); i++)
     {
-        char encryptedChar = message[i] ^ (key % 256);
-        encryptedText += String((int)encryptedChar) + " ";  // Store ASCII values
+        char plainChar = plainText.charAt(i);
+        char encryptedChar = plainChar ^ derivedKey;
+        encryptedText += String((int)encryptedChar); // Convert to ASCII-like integer
+        encryptedText += " ";                        // Add space as delimiter
     }
-    return encryptedText;
+    return encryptedText; // Ensure no trailing space
 }
 
-
-String decrypt(String message, long key)
+String decrypt(String cipherText, int key)
 {
+    // Use % 256 for compatibility with Teensy's key derivation
+    int derivedKey = key % 256;
     String decryptedText = "";
     int i = 0;
-    while (i < message.length())
+    while (i < cipherText.length())
     {
-        int ascii = message.substring(i, message.indexOf(' ', i)).toInt();
-        char decryptedChar = ascii ^ (key % 256);
+        int spaceIndex = cipherText.indexOf(' ', i);
+        if (spaceIndex == -1)
+        {
+            break;
+        }
+        String cipherChar = cipherText.substring(i, spaceIndex);
+        char encryptedChar = (char)cipherChar.toInt(); // Convert back from ASCII-like integer
+        char decryptedChar = encryptedChar ^ derivedKey;
         decryptedText += decryptedChar;
-        i = message.indexOf(' ', i) + 1;
+        i = spaceIndex + 1;
     }
     return decryptedText;
 }
-
-
 void loop()
 {
+    String message = "";
     if (securityLevel == LEVEL0)
     {
         // Check for DH init
-        checkDHPG(readSerial(Alice));
+        message = readSerial(Alice);
+        if (message != "")
+        {
+            Serial.print("A->B: ");
+            Serial.print(message);
+            send(Bob, message);
 
-        // Basic Relay
-        relay(Alice, Bob, "A->B: ");
-        relay(Bob, Alice, "B->A: ");
+            checkDHPG(message);
+        }
+
+        message = readSerial(Bob);
+        if (message != "")
+        {
+            Serial.print("B->A: ");
+            Serial.print(message);
+            send(Alice, message);
+        }
     }
     else if (securityLevel == LEVEL1)
     {
@@ -239,25 +229,26 @@ void loop()
         String message = readSerial(Alice);
         if (message != "")
         {
-            Serial.print("A->B: ");
             // Decrypt the message
             message = decrypt(message, AliceSharedSecret);
+            Serial.print("A->T->B: ");
             Serial.println(message);
-            send(Bob, encrypt(message, BobSharedSecret));
+
+            message = encrypt(message, BobSharedSecret);
+            send(Bob, message);
         }
 
         message = readSerial(Bob);
         if (message != "")
         {
-            Serial.print("B->A: ");
+
             // Decrypt the message
             message = decrypt(message, BobSharedSecret);
+            Serial.print("B->T->A: ");
             Serial.println(message);
-            send(Alice, encrypt(message, AliceSharedSecret));
+
+            message = encrypt(message, AliceSharedSecret);
+            send(Alice, message);
         }
-    }
-    else if (securityLevel == LEVEL2)
-    {
-        // Do nothing
     }
 }
